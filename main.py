@@ -102,20 +102,35 @@ def extract_nid_number(text: str) -> Optional[str]:
     return None
 
 def extract_name(text: str) -> Optional[str]:
-    """Extract name from text. Name will come after 'Name' and will be in caps lock. Only include consecutive all-caps words after 'Name'."""
-    # Look for 'Name' followed by all-caps words (possibly with dots or spaces)
-    name_pattern = r'Name[:\s]+((?:[A-Z][A-Z]+(?:\s+|\.|$))+)'  # One or more all-caps words
+    """Extract name from text. Name will come after 'Name' and may include abbreviations like 'MD.' before all-caps words."""
+    # Look for 'Name' followed by optional abbreviation (MD., MD, MD-, etc.) and all-caps words
+    name_pattern = r'Name[:\s]+((?:MD[\.,\-]?\s*)?(?:[A-Z][A-Z]+(?:\s+|\.|$))+)'  # MD. + all-caps words
     match = re.search(name_pattern, text)
     if match:
         name = match.group(1)
-        # Split into words, keep only all-caps words, join back
-        words = [w for w in re.split(r'\s+', name) if re.fullmatch(r'[A-Z]+', w)]
-        if words:
-            return ' '.join(words)
-    # Fallback: try to find the longest all-caps sequence in the text
-    all_caps = re.findall(r'\b([A-Z]{2,}(?:\s+[A-Z]{2,})*)\b', text)
+        # Split into words, keep 'MD.' or similar and all-caps words, join back
+        words = re.split(r'\s+', name)
+        filtered = []
+        for w in words:
+            if re.fullmatch(r'MD[\.,-]?', w):
+                filtered.append('MD.')
+            elif re.fullmatch(r'[A-Z]+', w):
+                filtered.append(w)
+        if filtered:
+            return ' '.join(filtered)
+    # Fallback: try to find the longest all-caps sequence, including 'MD.' if present before
+    fallback_pattern = r'(MD[\.,-]?\s*)?([A-Z]{2,}(?:\s+[A-Z]{2,})*)'
+    all_caps = re.findall(fallback_pattern, text)
     if all_caps:
-        return max(all_caps, key=len)
+        # Find the longest match
+        best = max(all_caps, key=lambda x: len((x[0] + x[1]).strip()))
+        name_parts = []
+        if best[0]:
+            name_parts.append('MD.')
+        if best[1]:
+            name_parts.append(best[1].strip())
+        if name_parts:
+            return ' '.join(name_parts)
     return None
 
 def perform_ocr_analysis(image_path: str) -> Dict[str, str]:
