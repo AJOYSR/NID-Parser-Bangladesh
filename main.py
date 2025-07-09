@@ -1,3 +1,10 @@
+#--------------------------------------------------------------------
+#Created By "AJOY SARKER"
+#Email: ajoysr.official@gmail.com
+#Github: @ajoysr
+#LinkedIn: @ajoysrju
+#--------------------------------------------------------------------
+
 import ssl
 import urllib.request
 
