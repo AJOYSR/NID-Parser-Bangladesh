@@ -26,6 +26,9 @@ except ImportError:
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Dict, List, Optional
 import easyocr
 import cv2
 import numpy as np
@@ -33,17 +36,60 @@ import tempfile
 import os
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
 import logging
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+# Pydantic models for API documentation
+class NIDInfoResponse(BaseModel):
+    """Response model for NID information extraction."""
+    name: str = "Not detected"
+    dob: str = "Not detected"
+    nid: str = "Not detected"
+    extracted_text: str = ""
+
+class HealthResponse(BaseModel):
+    """Response model for health check."""
+    status: str
+    timestamp: str
+
+class RootResponse(BaseModel):
+    """Response model for root endpoint."""
+    message: str
+    version: str
+    endpoints: Dict[str, str]
+
 app = FastAPI(
     title="NID Parser API",
-    description="API for extracting structured information from NID images using OCR",
-    version="1.0.0"
+    description="""
+    ## NID Parser API
+    
+    A powerful API for extracting structured information from National ID (NID) images using Optical Character Recognition (OCR).
+    """,
+    version="1.0.0",
+    contact={
+        "name": "AJOY SARKER",
+        "email": "ajoysr.official@gmail.com",
+        "url": "https://github.com/ajoysr"
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT"
+    },
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
 )
 
 @app.on_event("startup")
@@ -102,9 +148,22 @@ def extract_nid_number(text: str) -> Optional[str]:
     return None
 
 def extract_name(text: str) -> Optional[str]:
-    """Extract name from text. Name will come after 'Name' and may include abbreviations like 'MD.' before all-caps words."""
-    # Look for 'Name' followed by optional abbreviation (MD., MD, MD-, etc.) and all-caps words
-    name_pattern = r'Name[:\s]+((?:MD[\.,\-]?\s*)?(?:[A-Z][A-Z]+(?:\s+|\.|$))+)'  # MD. + all-caps words
+    """Extract name from text. Prioritize patterns that look like actual names."""
+    # First, look for "MD:" followed by name (most specific pattern)
+    # Look for "MD:" followed by name, but stop before "Data of Birth" or similar
+    md_pattern = r'MD:\s*([A-Z][A-Z]+(?:\s+[A-Z]+)*?)(?=\s+(?:Data|Date|of|Birth|0t|Birth|ara|@ue|\d|$))'
+    match = re.search(md_pattern, text)
+    if match:
+        name = match.group(1).strip()
+        # Clean up the name - remove any trailing single letters that might be artifacts
+        name_parts = name.split()
+        if len(name_parts) > 1 and len(name_parts[-1]) == 1:
+            # Remove single letter at the end (like "D" in "ZAKIR HOSSAIN D")
+            name_parts = name_parts[:-1]
+        return f"MD: {' '.join(name_parts)}"
+    
+    # Look for "Name:" followed by name
+    name_pattern = r'Name[:\s]+((?:MD[\.,\-]?\s*)?(?:[A-Z][A-Z]+(?:\s+|\.|$))+)'
     match = re.search(name_pattern, text)
     if match:
         name = match.group(1)
@@ -118,19 +177,43 @@ def extract_name(text: str) -> Optional[str]:
                 filtered.append(w)
         if filtered:
             return ' '.join(filtered)
-    # Fallback: try to find the longest all-caps sequence, including 'MD.' if present before
+    
+    # Look for "Data of Birth" or "Date of Birth" context - name often appears before this
+    dob_context_pattern = r'([A-Z][A-Z]+(?:\s+[A-Z]+)*)\s+(?:Data|Date)\s+of\s+Birth'
+    match = re.search(dob_context_pattern, text)
+    if match:
+        name = match.group(1).strip()
+        # Check if it looks like a reasonable name (not too long, not common words)
+        if len(name.split()) <= 3 and not any(word in ['SCREENSHOT', 'RECORDER', 'CHROME', 'EXTENSION'] for word in name.split()):
+            return name
+    
+    # Fallback: try to find all-caps sequences, but filter out common non-name words
     fallback_pattern = r'(MD[\.,-]?\s*)?([A-Z]{2,}(?:\s+[A-Z]{2,})*)'
     all_caps = re.findall(fallback_pattern, text)
     if all_caps:
-        # Find the longest match
-        best = max(all_caps, key=lambda x: len((x[0] + x[1]).strip()))
-        name_parts = []
-        if best[0]:
-            name_parts.append('MD.')
-        if best[1]:
-            name_parts.append(best[1].strip())
-        if name_parts:
-            return ' '.join(name_parts)
+        # Filter out common non-name words and find the best match
+        filtered_matches = []
+        for prefix, name_part in all_caps:
+            name_words = name_part.strip().split()
+            # Filter out common non-name words
+            filtered_words = [word for word in name_words 
+                            if word not in ['SCREENSHOT', 'RECORDER', 'CHROME', 'EXTENSION', 'DEVELOPMENT', 
+                                          'INTERVIEW', 'COMPANY', 'REPOSITORIES', 'RESEARCH', 'TRANSLATE',
+                                          'FEEDBACK', 'OPTIONS', 'PEOPLE', 'REPUBLIC']]
+            if filtered_words:
+                filtered_matches.append((prefix, ' '.join(filtered_words)))
+        
+        if filtered_matches:
+            # Find the longest reasonable match
+            best = max(filtered_matches, key=lambda x: len((x[0] + x[1]).strip()))
+            name_parts = []
+            if best[0]:
+                name_parts.append('MD.')
+            if best[1]:
+                name_parts.append(best[1].strip())
+            if name_parts:
+                return ' '.join(name_parts)
+    
     return None
 
 def perform_ocr_analysis(image_path: str) -> Dict[str, str]:
@@ -181,43 +264,132 @@ def perform_ocr_analysis(image_path: str) -> Dict[str, str]:
         logger.error(f"Error during OCR analysis: {str(e)}")
         raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
 
-@app.post("/extract-nid-info/")
-async def extract_nid_info(file: UploadFile = File(...)):
-    """
-    Extract structured information from NID image.
-    
-    Upload an image file and get back structured information including:
-    - name: detected name
-    - dob: detected date of birth  
-    - nid: detected NID number
-    """
-    # Validate file type
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="File must be an image")
-    
-    # Create temporary file
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
-        try:
-            # Write uploaded file to temporary file
-            content = await file.read()
-            temp_file.write(content)
-            temp_file.flush()
-            
-            # Perform OCR analysis
-            result = perform_ocr_analysis(temp_file.name)
-            
-            return JSONResponse(content=result)
-            
-        except Exception as e:
-            logger.error(f"Error processing file: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
+@app.post("/extract-nid-info/", 
+          response_model=NIDInfoResponse,
+          summary="Extract NID Information",
+          description="""
+          Extract structured information from a National ID (NID) image using OCR.
+          
+          ### Error Codes
+          - `400`: Invalid file type or size
+          - `500`: OCR processing error
+          """,
+          responses={
+              200: {
+                  "description": "Successfully extracted NID information",
+                  "content": {
+                      "application/json": {
+                          "example": {
+                              "name": "AJOY SARKER",
+                              "dob": "15/03/1999",
+                              "nid": "1234567890123",
+                              "extracted_text": "MD. AJOY SARKER Data of Birth 16/12/1999 NID: 1234567890123..."
+                          }
+                      }
+                  }
+              },
+              400: {
+                  "description": "Bad request - invalid file",
+                  "content": {
+                      "application/json": {
+                          "example": {
+                              "detail": "File must be an image"
+                          }
+                      }
+                  }
+              },
+              500: {
+                  "description": "Internal server error",
+                  "content": {
+                      "application/json": {
+                          "example": {
+                              "detail": "OCR processing failed: Unable to read image"
+                          }
+                      }
+                  }
+              }
+          },
+          tags=["NID Processing"])
+async def extract_nid_info(file: UploadFile = File(..., description="Image file of the National ID card")):
+    try:
+        # Debug logging
+        logger.info(f"Received request - filename: {file.filename}, content_type: {file.content_type}")
         
-        finally:
-            # Clean up temporary file
-            if os.path.exists(temp_file.name):
-                os.unlink(temp_file.name)
+        # Validate file type
+        if not file.content_type or not file.content_type.startswith('image/'):
+            logger.error(f"Invalid file type: {file.content_type}")
+            raise HTTPException(status_code=400, detail="File must be an image")
+        
+        # Validate file size (10MB limit)
+        max_size = 10 * 1024 * 1024  # 10MB
+        content = await file.read()
+        if len(content) > max_size:
+            raise HTTPException(status_code=400, detail="File size too large. Maximum size is 10MB")
+        
+        # Validate that we actually have content
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail="Empty file received")
+        
+        logger.info(f"Received file: {file.filename}, size: {len(content)} bytes, type: {file.content_type}")
+        
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
+            try:
+                # Write uploaded file to temporary file
+                temp_file.write(content)
+                temp_file.flush()
+                
+                # Perform OCR analysis
+                result = perform_ocr_analysis(temp_file.name)
+                
+                return JSONResponse(content=result)
+                
+            except Exception as e:
+                logger.error(f"Error processing file: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
+            
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_file.name):
+                    os.unlink(temp_file.name)
+                    
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in extract_nid_info: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/")
+@app.get("/", 
+         response_model=RootResponse,
+         summary="API Information",
+         description="""
+         Get basic information about the NID Parser API.
+         
+         This endpoint provides:
+         - API name and version
+         - Available endpoints
+         - Basic usage information
+         """,
+         responses={
+             200: {
+                 "description": "API information retrieved successfully",
+                 "content": {
+                     "application/json": {
+                         "example": {
+                             "message": "NID Parser API",
+                             "version": "1.0.0",
+                             "endpoints": {
+                                 "extract_nid_info": "/extract-nid-info/",
+                                 "docs": "/docs",
+                                 "health": "/health"
+                             }
+                         }
+                     }
+                 }
+             }
+         },
+         tags=["API Information"])
 async def root():
     """Root endpoint with API information."""
     return {
@@ -225,11 +397,38 @@ async def root():
         "version": "1.0.0",
         "endpoints": {
             "extract_nid_info": "/extract-nid-info/",
-            "docs": "/docs"
+            "docs": "/docs",
+            "health": "/health"
         }
     }
 
-@app.get("/health")
+@app.get("/health", 
+         response_model=HealthResponse,
+         summary="Health Check",
+         description="""
+         Check the health status of the NID Parser API.
+         
+         This endpoint is useful for:
+         - Monitoring system health
+         - Load balancer health checks
+         - Verifying API availability
+         
+         Returns the current status and timestamp.
+         """,
+         responses={
+             200: {
+                 "description": "API is healthy",
+                 "content": {
+                     "application/json": {
+                         "example": {
+                             "status": "healthy",
+                             "timestamp": "2024-01-15T10:30:00.123456"
+                         }
+                     }
+                 }
+             }
+         },
+         tags=["Monitoring"])
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
