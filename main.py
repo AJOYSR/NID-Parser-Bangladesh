@@ -297,7 +297,7 @@ def extract_fields_by_type(doc_type: str, text: str) -> dict:
         details["nid_number"] = extract_nid_number(text)
     elif doc_type == 'BO':
         # Example: BO ID pattern (customize as needed)
-        bo_pattern = r'BO\s*Account\s*Number\s*[:\-]?\s*(120\d{3}\s\d{10})'
+        bo_pattern = r'BO\s*Account\s*Number\s*[:\-]?\s*((?:\d\s*){16})' 
         match = re.search(bo_pattern, text, re.IGNORECASE)
         details["bo_id"] = match.group(1) if match else None
     elif doc_type == 'TIN':
@@ -354,16 +354,37 @@ async def extract_nid_info(
             raise HTTPException(status_code=400, detail="Empty file received")
         # Extract text from file (image or PDF)
         all_text = await extract_text_from_file(file, content)
-        print(all_text)
         # Extract fields based on type
         details = extract_fields_by_type(type, all_text)
-        
-        # Always return all fields, set missing to None
-        response = {
-            "type": type,
-            "details": details,
-            "raw_text": all_text
-        }
+        # Format response based on type
+        if type == 'NID':
+            response = {
+                "type": type,
+                "details": {
+                    "name": details.get("name"),
+                    "date_of_birth": details.get("date_of_birth"),
+                    "nid_number": details.get("nid_number"),
+                },
+            }
+        elif type == 'BO':
+            response = {
+                "type": type,
+                "details": {
+                    "bo_id": details.get("bo_id"),
+                },
+            }
+        elif type == 'TIN':
+            response = {
+                "type": type,
+                "details": {
+                    "tin_number": details.get("tin_number"),
+                },
+            }
+        else:
+            response = {
+                "type": type,
+                "details": details,
+            }
         return JSONResponse(content=response)
     except HTTPException:
         raise
