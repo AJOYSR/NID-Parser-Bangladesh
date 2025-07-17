@@ -24,7 +24,7 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -40,6 +40,12 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Add PDF/image support
+try:
+    from pdf2image import convert_from_bytes
+except ImportError:
+    convert_from_bytes = None
 
 
 # Pydantic models for API documentation
@@ -222,26 +228,37 @@ def perform_ocr_analysis(image_path: str) -> Dict[str, str]:
         # Initialize reader
         reader = initialize_reader()
 
-        # Load and downscale image if large
+        # Load and preprocess image
         img = cv2.imread(image_path)
+        if img is None:
+            raise ValueError("Unable to read image file")
+        
+        # Convert to grayscale for better OCR accuracy
+        gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        
+        
+        
+        # Downscale if large
         max_dim = 800
-        h, w = img.shape[:2]
+        h, w = gray_img.shape[:2]
         if max(h, w) > max_dim:
             scale = max_dim / float(max(h, w))
-            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-            # Save to temp file for OCR
-            temp_downscaled = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
-            cv2.imwrite(temp_downscaled.name, img)
-            ocr_image_path = temp_downscaled.name
+            processed_img = cv2.resize(gray_img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
         else:
-            ocr_image_path = image_path
+            processed_img = gray_img
+
+        # Save processed image to temp file for OCR
+        temp_processed = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+        cv2.imwrite(temp_processed.name, processed_img)
+        ocr_image_path = temp_processed.name
 
         # Perform OCR (detail=0 for faster text extraction)
-        logger.info(f"Performing OCR on {ocr_image_path}")
+        logger.info(f"Performing OCR on preprocessed image: {ocr_image_path}")
         results = reader.readtext(ocr_image_path, detail=0)
 
-        # Clean up temp downscaled file if used
-        if ocr_image_path != image_path and os.path.exists(ocr_image_path):
+        # Clean up temp file
+        if os.path.exists(ocr_image_path):
             os.unlink(ocr_image_path)
 
         # Extract all text
@@ -264,97 +281,91 @@ def perform_ocr_analysis(image_path: str) -> Dict[str, str]:
         logger.error(f"Error during OCR analysis: {str(e)}")
         raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
 
-@app.post("/extract-nid-info/", 
-          response_model=NIDInfoResponse,
-          summary="Extract NID Information",
-          description="""
-          Extract structured information from a National ID (NID) image using OCR.
-          
-          ### Error Codes
-          - `400`: Invalid file type or size
-          - `500`: OCR processing error
-          """,
-          responses={
-              200: {
-                  "description": "Successfully extracted NID information",
-                  "content": {
-                      "application/json": {
-                          "example": {
-                              "name": "AJOY SARKER",
-                              "dob": "15/03/1999",
-                              "nid": "1234567890123",
-                              "extracted_text": "MD. AJOY SARKER Data of Birth 16/12/1999 NID: 1234567890123..."
-                          }
-                      }
-                  }
-              },
-              400: {
-                  "description": "Bad request - invalid file",
-                  "content": {
-                      "application/json": {
-                          "example": {
-                              "detail": "File must be an image"
-                          }
-                      }
-                  }
-              },
-              500: {
-                  "description": "Internal server error",
-                  "content": {
-                      "application/json": {
-                          "example": {
-                              "detail": "OCR processing failed: Unable to read image"
-                          }
-                      }
-                  }
-              }
-          },
-          tags=["NID Processing"])
-async def extract_nid_info(file: UploadFile = File(..., description="Image file of the National ID card")):
+def extract_fields_by_type(doc_type: str, text: str) -> dict:
+    """Extract fields based on document type."""
+    # Default all fields to None
+    details = {
+        "name": None,
+        "date_of_birth": None,
+        "nid_number": None,
+        "bo_id": None,
+        "tin_number": None
+    }
+    if doc_type == 'NID':
+        details["name"] = extract_name(text)
+        details["date_of_birth"] = extract_date_of_birth(text)
+        details["nid_number"] = extract_nid_number(text)
+    elif doc_type == 'BO':
+        # Example: BO ID pattern (customize as needed)
+        bo_pattern = r'BO\s*Account\s*Number\s*[:\-]?\s*(120\d{3}\s\d{10})'
+        match = re.search(bo_pattern, text, re.IGNORECASE)
+        details["bo_id"] = match.group(1) if match else None
+    elif doc_type == 'TIN':
+        # Example: TIN pattern (customize as needed)
+        tin_pattern = r'\bTIN[\s:-]*(\d{9,12})\b'
+        match = re.search(tin_pattern, text, re.IGNORECASE)
+        details["tin_number"] = match.group(1) if match else None
+    # Add more types as needed
+    return details
+
+async def extract_text_from_file(file: UploadFile, content: bytes) -> str:
+    """Extract text from image or PDF file."""
+    if file.content_type == 'application/pdf':
+        if convert_from_bytes is None:
+            raise HTTPException(status_code=500, detail="pdf2image is not installed")
+        # Convert PDF to images
+        images = convert_from_bytes(content)
+        all_text = []
+        for img in images:
+            # Save PIL image to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_img:
+                img.save(temp_img.name, 'JPEG')
+                text = perform_ocr_analysis(temp_img.name)["extracted_text"]
+                all_text.append(text)
+                os.unlink(temp_img.name)
+        return ' '.join(all_text)
+    elif file.content_type.startswith('image/'):
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_img:
+            temp_img.write(content)
+            temp_img.flush()
+            text = perform_ocr_analysis(temp_img.name)["extracted_text"]
+            os.unlink(temp_img.name)
+            return text
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Only images and PDFs are allowed.")
+
+@app.post("/extract-nid-info/", summary="Extract Document Information", tags=["Document Processing"])
+async def extract_nid_info(
+    type: str = Form(..., description="Type of document: NID, BO, TIN"),
+    file: UploadFile = File(..., description="Image or PDF file of the document")
+):
     try:
-        # Debug logging
-        logger.info(f"Received request - filename: {file.filename}, content_type: {file.content_type}")
-        
+        logger.info(f"Received request - filename: {file.filename}, content_type: {file.content_type}, type: {type}")
         # Validate file type
-        if not file.content_type or not file.content_type.startswith('image/'):
+        if not file.content_type or (not file.content_type.startswith('image/') and file.content_type != 'application/pdf'):
             logger.error(f"Invalid file type: {file.content_type}")
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
+            raise HTTPException(status_code=400, detail="File must be an image or PDF")
         # Validate file size (10MB limit)
         max_size = 10 * 1024 * 1024  # 10MB
         content = await file.read()
         if len(content) > max_size:
             raise HTTPException(status_code=400, detail="File size too large. Maximum size is 10MB")
-        
-        # Validate that we actually have content
         if len(content) == 0:
             raise HTTPException(status_code=400, detail="Empty file received")
+        # Extract text from file (image or PDF)
+        all_text = await extract_text_from_file(file, content)
+        print(all_text)
+        # Extract fields based on type
+        details = extract_fields_by_type(type, all_text)
         
-        logger.info(f"Received file: {file.filename}, size: {len(content)} bytes, type: {file.content_type}")
-        
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
-            try:
-                # Write uploaded file to temporary file
-                temp_file.write(content)
-                temp_file.flush()
-                
-                # Perform OCR analysis
-                result = perform_ocr_analysis(temp_file.name)
-                
-                return JSONResponse(content=result)
-                
-            except Exception as e:
-                logger.error(f"Error processing file: {str(e)}")
-                raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
-            
-            finally:
-                # Clean up temporary file
-                if os.path.exists(temp_file.name):
-                    os.unlink(temp_file.name)
-                    
+        # Always return all fields, set missing to None
+        response = {
+            "type": type,
+            "details": details,
+            "raw_text": all_text
+        }
+        return JSONResponse(content=response)
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
         logger.error(f"Unexpected error in extract_nid_info: {str(e)}")
