@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
+from enum import Enum
 import easyocr
 import cv2
 import numpy as np
@@ -46,6 +47,14 @@ try:
     from pdf2image import convert_from_bytes
 except ImportError:
     convert_from_bytes = None
+
+
+# Enum for document types
+class DocumentType(str, Enum):
+    """Enum for supported document types."""
+    NID = "NID"
+    BO = "BO"
+    TIN = "TIN"
 
 
 # Pydantic models for API documentation
@@ -336,7 +345,7 @@ async def extract_text_from_file(file: UploadFile, content: bytes) -> str:
 
 @app.post("/extract-nid-info/", summary="Extract Document Information", tags=["Document Processing"])
 async def extract_nid_info(
-    type: str = Form(..., description="Type of document: NID, BO, TIN"),
+    type: DocumentType = Form(..., description="Type of document: NID, BO, TIN"),
     file: UploadFile = File(..., description="Image or PDF file of the document")
 ):
     try:
@@ -355,34 +364,34 @@ async def extract_nid_info(
         # Extract text from file (image or PDF)
         all_text = await extract_text_from_file(file, content)
         # Extract fields based on type
-        details = extract_fields_by_type(type, all_text)
+        details = extract_fields_by_type(type.value, all_text)
         # Format response based on type
-        if type == 'NID':
+        if type == DocumentType.NID:
             response = {
-                "type": type,
+                "type": type.value,
                 "details": {
                     "name": details.get("name"),
                     "date_of_birth": details.get("date_of_birth"),
                     "nid_number": details.get("nid_number"),
                 },
             }
-        elif type == 'BO':
+        elif type == DocumentType.BO:
             response = {
-                "type": type,
+                "type": type.value,
                 "details": {
                     "bo_id": details.get("bo_id"),
                 },
             }
-        elif type == 'TIN':
+        elif type == DocumentType.TIN:
             response = {
-                "type": type,
+                "type": type.value,
                 "details": {
                     "tin_number": details.get("tin_number"),
                 },
             }
         else:
             response = {
-                "type": type,
+                "type": type.value,
                 "details": details,
             }
         return JSONResponse(content=response)
