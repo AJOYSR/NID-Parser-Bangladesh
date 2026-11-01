@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+# Only collect the real test suite. scripts/ holds interactive helpers that
+# require a running server and must not be picked up as tests.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+markers = [
+    "ocr: tests that run real OCR inference (slow, downloads models; deselected by default)",
+]
+

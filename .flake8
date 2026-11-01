@@ -1,0 +1,12 @@
+# flake8 does not read pyproject.toml, so its configuration lives here.
+[flake8]
+max-line-length = 127
+max-complexity = 10
+exclude =
+    .git,
+    __pycache__,
+    venv,
+    env,
+    models,
+    build,
+    dist
