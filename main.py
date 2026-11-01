@@ -127,21 +127,89 @@ def initialize_reader():
         logger.info("EasyOCR reader initialized successfully")
     return reader
 
+# Month names as they are printed on English-language cards.
+MONTH_NAMES = r'Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec'
+
+# Date candidates, paired with the order their groups appear in.
+#
+# The year group deliberately has no trailing word boundary. OCR regularly
+# appends a stray digit to the year ("23 Jan 19941" on a perfectly legible
+# card), and requiring a boundary there threw the whole date away. Matches that
+# are not real dates are filtered out by _is_plausible_date() instead.
+DATE_PATTERNS = (
+    # 15/03/1990, 15-03-1990, 15.03.1990 (day first)
+    (re.compile(r'\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})'), 'dmy'),
+    # 1990/03/15 (year first)
+    (re.compile(r'\b(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})'), 'ymd'),
+    # 15 Mar 1990
+    (re.compile(r'\b(\d{1,2})\s+(' + MONTH_NAMES + r')[a-z]*\s+(\d{2,4})', re.IGNORECASE), 'dmy_name'),
+    # Mar 15, 1990
+    (re.compile(r'\b(' + MONTH_NAMES + r')[a-z]*\s+(\d{1,2}),?\s+(\d{2,4})', re.IGNORECASE), 'mdy_name'),
+)
+
+# The "Date of Birth" label, and the OCR variants seen on real cards:
+# "Data of Birth", "Date ol Birth", "Date 0f Birth", "DOB", "D.O.B."
+DOB_LABEL_PATTERN = re.compile(r'\b(?:dat[ae]\s*[o0][fl]?\s*b[il1]rth|d\.?o\.?b)\b', re.IGNORECASE)
+
+# How far after the label to look for the date itself.
+DOB_LABEL_WINDOW = 60
+
+
+def _is_plausible_year(raw: str) -> bool:
+    """Check that a matched year could belong to a date of birth.
+
+    Three digits means OCR truncated the year ("23 Jan 199"). Returning that as
+    a date of birth is worse than returning nothing, so it is rejected.
+    """
+    if len(raw) == 2:
+        return True  # Ambiguous but common on older documents.
+    if len(raw) == 4:
+        return 1900 <= int(raw) <= datetime.now().year
+    return False
+
+
+def _is_plausible_date(kind: str, groups) -> bool:
+    """Reject matches whose day, month or year cannot be real."""
+    if kind == 'dmy':
+        day, month, year = int(groups[0]), int(groups[1]), groups[2]
+    elif kind == 'ymd':
+        year, month, day = groups[0], int(groups[1]), int(groups[2])
+    elif kind == 'dmy_name':
+        day, month, year = int(groups[0]), 1, groups[2]  # Month matched by name.
+    else:  # mdy_name
+        day, month, year = int(groups[1]), 1, groups[2]  # Month matched by name.
+    return 1 <= day <= 31 and 1 <= month <= 12 and _is_plausible_year(year)
+
+
+def _find_date_candidates(text: str):
+    """Return (position, matched text) for every plausible date, in reading order."""
+    candidates = []
+    for pattern, kind in DATE_PATTERNS:
+        for match in pattern.finditer(text):
+            if _is_plausible_date(kind, match.groups()):
+                candidates.append((match.start(), match.group(0)))
+    candidates.sort(key=lambda item: item[0])
+    return candidates
+
+
 def extract_date_of_birth(text: str) -> Optional[str]:
-    """Extract date of birth from text using various patterns."""
-    # Common date patterns
-    date_patterns = [
-        r'\b(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})\b',  # DD/MM/YYYY or DD-MM-YYYY
-        r'\b(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})\b',  # YYYY/MM/DD
-        r'\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{2,4})\b',  # DD Month YYYY
-        r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{2,4})\b',  # Month DD, YYYY
-    ]
-    
-    for pattern in date_patterns:
-        matches = re.finditer(pattern, text, re.IGNORECASE)
-        for match in matches:
-            return match.group(0)  # Return the full matched string
-    return None
+    """Extract date of birth from text, preferring a date that follows its label.
+
+    Documents carry other dates - an issue date, an expiry date, a registration
+    date - so the first date in the text is not necessarily the right one. When
+    OCR read the "Date of Birth" label clearly enough to find, the date that
+    follows it wins. Returns None when nothing plausible is found.
+    """
+    candidates = _find_date_candidates(text)
+    if not candidates:
+        return None
+
+    for label in DOB_LABEL_PATTERN.finditer(text):
+        for start, value in candidates:
+            if label.end() <= start <= label.end() + DOB_LABEL_WINDOW:
+                return value
+
+    return candidates[0][1]
 
 
 def extract_nid_number(text: str) -> Optional[str]:
@@ -162,21 +230,45 @@ def extract_nid_number(text: str) -> Optional[str]:
             return matches[0].strip()
     return None
 
+# All-caps words that turn up beside a name but are not part of it: card
+# labels, and browser chrome when the document was captured as a screenshot.
+NON_NAME_WORDS = frozenset({
+    'SCREENSHOT', 'RECORDER', 'CHROME', 'EXTENSION', 'DEVELOPMENT',
+    'INTERVIEW', 'COMPANY', 'REPOSITORIES', 'RESEARCH', 'TRANSLATE',
+    'FEEDBACK', 'OPTIONS', 'PEOPLE', 'REPUBLIC',
+    'NATIONAL', 'CARD', 'GOVERNMENT', 'BANGLADESH', 'NAME', 'DATE', 'DATA',
+    'BIRTH', 'BLOOD', 'GROUP', 'PLACE', 'ISSUE', 'NID', 'ID', 'NO',
+})
+
+# "MD: ZAKIR HOSSAIN" or "MD. ZAKIR HOSSAIN". The card prints the honorific
+# with a period, but OCR frequently reads it as a colon, so both are accepted
+# and whichever was read is preserved in the result.
+#
+# The name runs on for as long as the words stay all-caps, which stops it at
+# the next field label or at OCR noise. Anchoring on a following label instead
+# used to drop the honorific whenever that label was misread.
+MD_NAME_PATTERN = re.compile(r'\bMD\s*([:.])\s*([A-Z][A-Z]+(?:\s+[A-Z][A-Z]+)*)')
+
+
+def _clean_name_words(name: str) -> str:
+    """Drop label words and trailing single-letter OCR artefacts from a name."""
+    words = [word for word in name.split() if word.upper() not in NON_NAME_WORDS]
+    # OCR picks up stray initials from the card border, e.g. "ZAKIR HOSSAIN D".
+    while len(words) > 1 and len(words[-1]) == 1:
+        words.pop()
+    return ' '.join(words)
+
+
 def extract_name(text: str) -> Optional[str]:
     """Extract name from text. Prioritize patterns that look like actual names."""
-    # First, look for "MD:" followed by name (most specific pattern)
-    # Look for "MD:" followed by name, but stop before "Data of Birth" or similar
-    md_pattern = r'MD:\s*([A-Z][A-Z]+(?:\s+[A-Z]+)*?)(?=\s+(?:Data|Date|of|Birth|0t|Birth|ara|@ue|\d|$))'
-    match = re.search(md_pattern, text)
+    # The "MD:" / "MD." honorific is the most specific signal available.
+    match = MD_NAME_PATTERN.search(text)
     if match:
-        name = match.group(1).strip()
-        # Clean up the name - remove any trailing single letters that might be artifacts
-        name_parts = name.split()
-        if len(name_parts) > 1 and len(name_parts[-1]) == 1:
-            # Remove single letter at the end (like "D" in "ZAKIR HOSSAIN D")
-            name_parts = name_parts[:-1]
-        return f"MD: {' '.join(name_parts)}"
-    
+        separator = match.group(1)
+        name = _clean_name_words(match.group(2))
+        if name:
+            return f"MD{separator} {name}"
+
     # Look for "Name:" followed by name
     name_pattern = r'Name[:\s]+((?:MD[\.,\-]?\s*)?(?:[A-Z][A-Z]+(?:\s+|\.|$))+)'
     match = re.search(name_pattern, text)
@@ -188,20 +280,20 @@ def extract_name(text: str) -> Optional[str]:
         for w in words:
             if re.fullmatch(r'MD[\.,-]?', w):
                 filtered.append('MD.')
-            elif re.fullmatch(r'[A-Z]+', w):
+            elif re.fullmatch(r'[A-Z]+', w) and w not in NON_NAME_WORDS:
                 filtered.append(w)
         if filtered:
             return ' '.join(filtered)
-    
+
     # Look for "Data of Birth" or "Date of Birth" context - name often appears before this
     dob_context_pattern = r'([A-Z][A-Z]+(?:\s+[A-Z]+)*)\s+(?:Data|Date)\s+of\s+Birth'
     match = re.search(dob_context_pattern, text)
     if match:
         name = match.group(1).strip()
         # Check if it looks like a reasonable name (not too long, not common words)
-        if len(name.split()) <= 3 and not any(word in ['SCREENSHOT', 'RECORDER', 'CHROME', 'EXTENSION'] for word in name.split()):
+        if len(name.split()) <= 3 and not any(word in NON_NAME_WORDS for word in name.split()):
             return name
-    
+
     # Fallback: try to find all-caps sequences, but filter out common non-name words
     fallback_pattern = r'(MD[\.,-]?\s*)?([A-Z]{2,}(?:\s+[A-Z]{2,})*)'
     all_caps = re.findall(fallback_pattern, text)
@@ -209,15 +301,10 @@ def extract_name(text: str) -> Optional[str]:
         # Filter out common non-name words and find the best match
         filtered_matches = []
         for prefix, name_part in all_caps:
-            name_words = name_part.strip().split()
-            # Filter out common non-name words
-            filtered_words = [word for word in name_words 
-                            if word not in ['SCREENSHOT', 'RECORDER', 'CHROME', 'EXTENSION', 'DEVELOPMENT', 
-                                          'INTERVIEW', 'COMPANY', 'REPOSITORIES', 'RESEARCH', 'TRANSLATE',
-                                          'FEEDBACK', 'OPTIONS', 'PEOPLE', 'REPUBLIC']]
+            filtered_words = _clean_name_words(name_part.strip())
             if filtered_words:
-                filtered_matches.append((prefix, ' '.join(filtered_words)))
-        
+                filtered_matches.append((prefix, filtered_words))
+
         if filtered_matches:
             # Find the longest reasonable match
             best = max(filtered_matches, key=lambda x: len((x[0] + x[1]).strip()))
@@ -228,8 +315,9 @@ def extract_name(text: str) -> Optional[str]:
                 name_parts.append(best[1].strip())
             if name_parts:
                 return ' '.join(name_parts)
-    
+
     return None
+
 
 def perform_ocr_analysis(image_path: str) -> Dict[str, str]:
     """Perform OCR analysis and extract structured information."""
