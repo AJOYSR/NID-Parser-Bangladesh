@@ -1,0 +1,116 @@
+name: 🐛 Bug report
+description: Something in the API, setup, or tooling is broken
+title: "[Bug]: "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report.
+
+        ⚠️ **If the parser read a document incorrectly**, please use the
+        [Bad parse report](https://github.com/AJOYSR/NID-Parser-Bangladesh/issues/new?template=bad_parse.yml) instead — it asks for the
+        details that make those fixable.
+
+        🔒 **Never attach a real identity document** or real personal data.
+        Redact or synthesise anything you paste here.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file
+      options:
+        - label: I searched [existing issues](https://github.com/AJOYSR/NID-Parser-Bangladesh/issues?q=is%3Aissue) and this has not been reported.
+          required: true
+        - label: Nothing I am pasting here contains real NID, BO, or TIN data.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+      placeholder: |
+        I sent a PNG to /extract-nid-info/ with type=NID and got a 500.
+        I expected a 200 with the parsed fields.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or requests, so a maintainer can follow along.
+      placeholder: |
+        1. uvicorn main:app --port 8000
+        2. curl -X POST http://localhost:8000/extract-nid-info/ \
+             -F "type=NID" -F "file=@sample.png"
+        3. See the error below
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output and server logs
+      description: The full traceback or response body. Redact any personal data.
+      render: shell
+    validations:
+      required: false
+
+  - type: dropdown
+    id: endpoint
+    attributes:
+      label: Which part is affected?
+      options:
+        - POST /extract-nid-info/
+        - GET /health
+        - GET / (root)
+        - /docs or /redoc
+        - Setup script (setup.sh / setup.bat)
+        - Tests or CI
+        - Documentation
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+      placeholder: "3.11.9"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - Windows
+        - Docker / container
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Version or commit
+      description: The release tag, or `git rev-parse --short HEAD`
+      placeholder: "v1.0.0 or 6ea49e0"
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Workarounds you found, related issues, screenshots of the UI.
+    validations:
+      required: false

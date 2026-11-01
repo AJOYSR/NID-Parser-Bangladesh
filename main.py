@@ -306,9 +306,10 @@ def extract_fields_by_type(doc_type: str, text: str) -> dict:
         details["nid_number"] = extract_nid_number(text)
     elif doc_type == 'BO':
         # Example: BO ID pattern (customize as needed)
-        bo_pattern = r'BO\s*Account\s*Number\s*[:\-]?\s*((?:\d\s*){16})' 
+        bo_pattern = r'BO\s*Account\s*Number\s*[:\-]?\s*((?:\d\s*){16})'
         match = re.search(bo_pattern, text, re.IGNORECASE)
-        details["bo_id"] = match.group(1) if match else None
+        # The trailing \s* in the pattern can absorb whitespace after the last digit.
+        details["bo_id"] = match.group(1).strip() if match else None
     elif doc_type == 'TIN':
         # Example: TIN pattern (customize as needed)
         tin_pattern = r'\bTIN[\s:-]*(\d{9,12})\b'

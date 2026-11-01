@@ -108,10 +108,21 @@ logs/
 temp/
 tmp/
 
-# Uploaded files (for testing)
+# Uploaded files and local test documents.
+# Never commit real identity documents - see CONTRIBUTING.md.
 uploads/
 test_images/
+test-images/
+testimages/
 
 # EasyOCR models (will be downloaded automatically)
 *.pth
-*.onnx 
+*.onnx
+
+# Generated sample documents (regenerate with scripts/generate_sample_document.py)
+sample_*.png
+sample_*.jpg
+sample_*.pdf
+
+# Downloaded OCR model directory
+models/

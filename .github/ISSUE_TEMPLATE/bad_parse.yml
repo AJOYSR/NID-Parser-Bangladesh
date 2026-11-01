@@ -1,0 +1,131 @@
+name: 🔍 Bad parse report
+description: The OCR ran, but a field came back wrong, missing, or garbled
+title: "[Parse]: "
+labels: ["bad parse", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are the most useful reports this project gets — every one makes the
+        extraction patterns more robust.
+
+        🔒 **Do not attach a real identity document.** Redact every digit of the
+        NID/BO/TIN number, the photo, the signature, and the address, or replace
+        the values with obvious fakes. Keep the *layout and field labels* intact —
+        that is the part we need.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you file
+      options:
+        - label: Any document text I paste below is redacted or synthetic.
+          required: true
+        - label: I searched existing issues for this pattern.
+          required: true
+
+  - type: dropdown
+    id: doc-type
+    attributes:
+      label: Document type
+      options:
+        - NID
+        - BO (Beneficiary Owner account)
+        - TIN
+    validations:
+      required: true
+
+  - type: dropdown
+    id: doc-format
+    attributes:
+      label: Document format
+      options:
+        - Smart NID card (chip card)
+        - Old laminated NID card
+        - NID server copy / printout
+        - Scanned PDF
+        - Phone photo
+        - Screenshot
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: fields
+    attributes:
+      label: Which fields were wrong?
+      options:
+        - label: Name
+        - label: Date of birth
+        - label: NID number
+        - label: BO account number
+        - label: TIN number
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What the API returned
+      description: The JSON response body, redacted.
+      render: json
+      placeholder: |
+        {
+          "type": "NID",
+          "details": {
+            "name": "MD: XXXXX XXXXX D",
+            "date_of_birth": "Not detected",
+            "nid_number": "19XX XXXX"
+          }
+        }
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What it should have returned
+      description: The correct parse, with values redacted or replaced by fakes.
+      render: json
+      placeholder: |
+        {
+          "type": "NID",
+          "details": {
+            "name": "MD: XXXXX XXXXX",
+            "date_of_birth": "01/01/1990",
+            "nid_number": "1234567890123"
+          }
+        }
+    validations:
+      required: true
+
+  - type: textarea
+    id: ocr-text
+    attributes:
+      label: Raw OCR text (redacted)
+      description: |
+        This is the single most useful thing you can provide. It is the
+        `extracted_text` value, or the `Extracted text:` line in the server log.
+        Replace real digits and names with `X`, but keep the spacing, the stray
+        characters, and the field labels exactly as OCR produced them.
+      render: text
+      placeholder: |
+        Government of the People's Republic of Bangladesh NATIONAL ID CARD
+        Name: XXXXX XXXX MD: XXXXX XXXXXX Data of Birth 01 Jan 1990 ID NO: 19XX XXX XXXX
+    validations:
+      required: true
+
+  - type: textarea
+    id: image-conditions
+    attributes:
+      label: Image conditions
+      description: Resolution, glare, angle, cropping, lighting — anything that might affect OCR.
+      placeholder: "1280x800 phone photo, slight glare over the ID number, card at ~10° angle"
+    validations:
+      required: false
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested fix
+      description: If you have an idea for the pattern that would handle this, share it.
+    validations:
+      required: false
