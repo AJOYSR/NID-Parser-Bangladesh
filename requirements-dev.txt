@@ -1,6 +1,6 @@
 # Development and test dependencies.
 # Install alongside requirements.txt:  pip install -r requirements-dev.txt
 
-pytest>=7.4
-flake8>=6.1
+pytest>=9.2.0
+flake8>=7.5.0
 requests>=2.31          # used by scripts/smoke_test.py
