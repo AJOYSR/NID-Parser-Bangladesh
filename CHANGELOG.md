@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request template, an issue-template chooser, and `CODEOWNERS`.
 - Dependabot configuration for pip and GitHub Actions, with `torch`,
   `torchvision`, and `torchaudio` grouped so they update together.
-- An offline unit test suite in `tests/` — 56 cases covering the extraction
-  helpers and the per-type dispatch.
+- An offline unit test suite in `tests/` — 82 cases covering the extraction
+  helpers, the per-type dispatch, and the OCR-noise regressions found by running
+  real documents through the parser.
 - `scripts/generate_sample_document.py`, which draws synthetic NID, BO, and TIN
   images so contributors can test and file issues without touching a real
   identity document.
@@ -41,6 +42,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `image_path` parameter as a missing fixture.
 - `bo_id` was returned with a trailing space, because the trailing `\s*` in the
   BO account pattern absorbed the whitespace after the last digit.
+- A date of birth was discarded entirely when OCR appended a stray digit to the
+  year. The year group required a word boundary, so a legible `23 Jan 19941`
+  matched nothing and the field came back empty.
+- A truncated year was reported as a real date. `23 Jan 199` was returned as a
+  date of birth; implausible days, months, and years are now rejected, and the
+  field comes back empty instead of wrong.
+- The first date in the text was returned regardless of what it meant, so a
+  document that prints an issue or registration date above the date of birth
+  yielded the wrong one. Extraction now prefers a date that follows a
+  `Date of Birth` label, including the OCR variants `Data of Birth`,
+  `Date ol Birth`, `DOB`, and `D.O.B.`, and falls back to reading order only
+  when no label is legible.
+- The `MD.` honorific was dropped whenever an uppercase fragment preceded it,
+  because the fallback pattern matched that fragment and the honorific as one
+  run. The honorific is now matched directly, with `MD.` and `MD:` both
+  accepted and whichever was read preserved in the result.
 
 ## [1.0.0] - 2025-07-10
 
