@@ -3,4 +3,4 @@
 
 pytest>=7.4
 flake8>=6.1
-requests>=2.31          # used by scripts/smoke_test.py
+requests>=2.34.2          # used by scripts/smoke_test.py
